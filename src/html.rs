@@ -37,7 +37,7 @@ impl Parser {
         let mut nodes = vec!();
         loop {
             self.consume_whitespace();
-            if self.eof() || self.starts_with("<") {
+            if self.eof() || self.starts_with("</") {
                 break;
             }
             nodes.push(self.parse_node());
@@ -263,8 +263,29 @@ mod tests {
         assert_eq!(parsed("<div>\n  <p>hi</p>\n</div>"), "(div (p \"hi\"))");
     }
 
-    // `parse_node `跳过文本节点前的空格，但跳过文本节点本身
-    // 向上延伸到下一个“<”，因此保留尾随空格。此测试引脚
-    // 把这种行为分为两半。
+    // `parse_node`跳过文本节点之前的空白，但文本节点本身会一直运行到下一个`<`，
+    // 因此保留了尾随的空白。这个测试确定了这种行为的两个方面。
+    #[test]
+    fn leading_whitespace_before_text_is_discarded_but_trailing_whitespace_is_kept() {
+        assert_eq!(parsed("<p>  a  </p>"), "(p \"a  \")");
+    }
 
+    #[test]
+    fn character_entities_are_left_untouched() {
+        assert_eq!(parsed("<p>a &amp; b</p>"), "(p \"a &amp; b\")");
+    }
+
+    #[test]
+    #[should_panic(expected = "Expected \"</\"")]
+    fn a_missing_closing_tag_panics() {
+        parse("<p>hi".to_string());
+    }
+
+    #[test]
+    #[should_panic(expected = "Expected \"p\"")]
+    fn a_mismatched_closing_tag_panics() { parse("<p>hi</div>".to_string()); }
+
+    #[test]
+    #[should_panic]
+    fn an_unquoted_attribute_value_panics() { parse("<p id=main></p>") }
 }

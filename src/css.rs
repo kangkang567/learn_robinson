@@ -305,8 +305,6 @@ mod tests {
         assert_eq!(valid_identifier_char('-'), true);
     }
 
-    let parse_data = Parser { pos: 0, input: "" }
-
     /// 解析样式表并返回其第一条规则。
     fn parse_first_rule(css: &str) -> Rule {
         let mut rules = parse(css.to_string()).rules;

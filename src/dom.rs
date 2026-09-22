@@ -47,7 +47,7 @@ impl ElementData {
 
     pub fn classes(&self) -> HashSet<&str> {
         match self.attrs.get("class") {
-            Some(classlist) => classlist.split(' ').collect(),
+            Some(class_list) => class_list.split(' ').collect(),
             None => HashSet::new()
         }
     }
@@ -90,7 +90,7 @@ mod tests {
         assert_eq!(
             match &node.children[0].node_type {
                 NodeType::Text(data) => data(),
-                _ => panic!("expected a text node");
+                _ => panic!("expected a text node")
             },
             "hi"
         );
