@@ -127,3 +127,320 @@ fn matching_simple_selector(elem: &ElementData, selector: &SimpleSelector) -> bo
     // 我们没有发现任何不匹配的选择器组件。
     true
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::css::{Declaration, Rule, Selector, SimpleSelector, Stylesheet, Unit, Value};
+    use crate::dom::{elem, text, AttrMap};
+
+    /// 从便捷的 `(名称, 值)` 对构建属性映射。
+    fn attrs(pairs: &[(&str, &str)]) -> AttrMap {
+        pairs.iter().map(|(name, value)| ((*name).to_string(), (*value).to_string())).collect()
+    }
+
+    /// 从可选标记名、可选id和类列表构建一个简单的选择器。
+    fn selector(tag: Option<&str>, id: Option<&str>, classes: &[&str]) -> Selector {
+        Selector::Simple(SimpleSelector {
+            tag_name: tag.map(String::from),
+            id: id.map(String::from),
+            class: classes.iter().map(|class| (*class).to_string()).collect(),
+        })
+    }
+
+    /// 从选择器和“（property，value）”声明对构建规则。
+    fn rule(selectors: Vec<Selector>, declarations: Vec<(&str, Value)>) -> Rule {
+        Rule {
+            selectors,
+            declarations: declarations
+                .into_iter()
+                .map(|name, value| Declaration {name: name.to_string(), value})
+                .collect(),
+        }
+    }
+
+    /// 根据规则构建样式表。
+    fn stylesheet(rules: Vec<Rule>) -> Stylesheet {
+        Stylesheet { rules }
+    }
+
+    /// 根据样式表设置元素节点的样式，并返回已设置样式的根。
+    fn style_element<'a>(node: &'a Node, css: &'a Stylesheet) -> StyledNode<'a> {
+        style_tree(node, css)
+    }
+
+    /// 借用样式化节点后面的DOM节点的标记名。
+    fn tag_name(node: &StyledNode) -> &'a str {
+        match &node.node.node_type {
+            NodeType::Element(data) => &data.tag_name,
+            NodeType::Text(data) => panic!("预期为元素节点, 但实际为文本 {data:?}"),
+        }
+    }
+
+    #[test]
+    fn value_returns_specified_value_or_none() {
+        let node = elem("p".to_string(), attrs(&[]), vec![]);
+        let css = stylesheet(vec![rule(
+            vec![selector(Some("p"), None, &[])],
+            vec![("color", Value::Keyword("red".to_string()))],
+        )]);
+        let styled = style_tree(&node, &css);
+
+        assert_eq!(styled.value("color"), Some(Value::Keyword("red".to_string())));
+        assert_eq!(styled.value("margin"), None);
+    }
+
+    #[test]
+    fn lookup_prefers_name_then_fallback_then_default() {
+        let node = elem("p".to_string(), attrs(&[]), vec![]);
+        let fallback = stylesheet(vec![rule(
+            vec![selector(Some("p"), None, &[])],
+            vec![("color", Value::Keyword("red".to_string()))],
+        )]);
+        let styled = style_tree(&node, &css);
+
+        assert_eq!(styled.value("color"), Some(Value::Keyword("red".to_string())));
+        assert_eq!(styled.value("margin"), None);
+    }
+
+    #[test]
+    fn lookup_prefers_name_then_fallback_then_default() {
+        let node = elem("p".to_string(), attrs(&[]), vec![]);
+        let fallback = stylesheet(vec![rule(
+            vec![selector(Some("p"), None, &[])],
+            vec![("margin", Value::Length(3.0, Unit::Px))],
+        )]);
+        let both = stylesheet(vec![rule(
+            vec![selector(Some("p"), None, &[])],
+            vec![
+                ("margin-left", Value::Length(2.0, Unit::Px)),
+                ("margin", Value::Length(3.0, Unit::Px)),
+            ],
+        )]);
+        let none = stylesheet(vec![]);
+        let zero = Value::Length(0.0, Unit::Px);
+
+        // 未指定`margin-left`，因此使用简写属性`margin`。
+        assert_eq!(
+            style_tree(&node, &fallback).lookup("margin-left", "margin", &zero),
+            Value::Length(3.0, Unit::Px)
+        );
+        // 当两者均有规定时，长写法优于缩写法。
+        assert_eq!(
+            style_tree(&node, &both).lookup("margin-left", "margin", &zero),
+            Value::Length(2.0, Unit::Px)
+        );
+        // 未指定任一属性，因此采用默认值。
+        assert_eq!(style_tree(&node, &none).lookup("margin-left", "margin", &zero), zero);
+    }
+
+    #[test]
+    fn display_maps_keywords_and_defaults_to_inline() {
+        let node = elem("p".to_string(), attrs(&[]), vec![]);
+        let css_with = |value: Value| {
+            stylesheet(vec![rule(
+                vec![selector(Some("p"), None, &[])],
+                vec![("display", value)],
+            )])
+        };
+
+        assert!(style_tree(&node, &css_with(Value::Keyword("block".to_string()))).display()
+            == Display::Block);
+        assert!(style_tree(&node, &css_with(Value::Keyword("none".to_string()))).display()
+            == Display::None);
+        assert!(style_tree(&node, &css_with(Value::Keyword("inline".to_string()))).display()
+            == Display::Inline);
+        // 未知的关键字和缺失的声明会退回内联。
+        assert!(style_tree(&node, &css_with(Value::Keyword("flex".to_string()))).display()
+            == Display::Inline);
+        assert!(style_tree(&node, &stylesheet(vec![])).display() == Display::Inline);
+        // A non-keyword value is not a valid `display` keyword, so inline is used.
+        assert!(style_tree(&node, &css_with(Value::Length(1.0, Unit::Px))).display()
+            == Display::Inline);
+    }
+
+    #[test]
+    fn style_tree_gives_text_nodes_no_specified_values() {
+        let node = text("hello".to_string());
+        let styled = style_tree(&node, &stylesheet(vec![]));
+
+        assert!(styled.specified_values.is_empty());
+        assert!(styled.children.is_empty());
+        assert_eq!(styled.value("color"), None);
+    }
+
+    #[test]
+    fn style_tree_preserves_tree_structure_and_styles_each_node() {
+        let child = elem("span".to_string(), attrs(&[]), vec![]);
+        let node = elem("div".to_string(), attrs(&[("id", "main")]), vec![child]);
+        let css = stylesheet(vec![
+            rule(
+                vec![selector(Some("div"), None, &[])],
+                vec![("display", Value::Keyword("block".to_string()))],
+            ),
+            rule(
+                vec![selector(Some("span"), None, &[])],
+                vec![("display", Value::Keyword("none".to_string()))],
+            ),
+        ]);
+        let styled = style_tree(&node, &css);
+
+        assert_eq!(tag_name(&styled), "div");
+        assert_eq!(styled.children.len(), 1);
+        assert_eq!(tag_name(&styled.children[0]), "span");
+        assert!(styled.display() == Display::Block);
+        assert!(styled.children[0].display() == Display::None);
+    }
+
+    #[test]
+    fn higher_specificity_rule_wins() {
+        let node = elem("p".to_string(), attrs(&[("id", "main"), ("class", "note")]), vec![]);
+        let css = stylesheet(vec![
+            rule(
+                vec![selector(Some("p"), None, &[])],
+                vec![("color", Value::Keyword("red".to_string()))],
+            ),
+            rule(
+                vec![selector(None, None, &["note"])],
+                vec![("color", Value::Keyword("green".to_string()))],
+            ),
+            rule(
+                vec![selector(None, Some("main"), &[])],
+                vec![("color", Value::Keyword("blue".to_string()))],
+            ),
+        ]);
+        let styled = style_tree(&node, &css);
+
+        // (1,0,0) beats (0,1,0), which beats (0,0,1).
+        assert_eq!(styled.value("color"), Some(Value::Keyword("blue".to_string())));
+    }
+
+    #[test]
+    fn later_declaration_wins_inside_a_single_rule() {
+        let node = elem("p".to_string(), attrs(&[]), vec![]);
+        let css = stylesheet(vec![rule(
+            vec![selector(Some("p"), None, &[])],
+            vec![
+                ("color", Value::Keyword("red".to_string())),
+                ("color", Value::Keyword("blue".to_string())),
+            ],
+        )]);
+        let styled = style_tree(&node, &css);
+
+        assert_eq!(styled.value("color"), Some(Value::Keyword("blue".to_string())));
+    }
+
+    #[test]
+    fn non_matching_rules_are_ignored() {
+        let node = elem("p".to_string(), attrs(&[]), vec![]);
+        let css = stylesheet(vec![rule(
+            vec![selector(Some("span"), None, &[])],
+            vec![("color", Value::Keyword("red".to_string()))],
+        )]);
+        let styled = style_tree(&node, &css);
+
+        assert!(styled.specified_values.is_empty());
+    }
+
+    #[test]
+    fn matches_simple_selector_checks_tag_id_and_class() {
+        let data = ElementData {
+            tag_name: "p".to_string(),
+            attrs: attrs(&[("id", "main"), ("class", "note important")]),
+        };
+
+        // 通用选择器没有组件，所以它总是匹配的。
+        assert!(matches_simple_selector(&data, &SimpleSelector {
+            tag_name: None,
+            id: None,
+            class: vec![],
+        }));
+        assert!(matches_simple_selector(
+            &data,
+            &SimpleSelector { tag_name: Some("p".to_string()), id: None, class: vec![] }
+        ));
+        assert!(matches_simple_selector(
+            &data,
+            &SimpleSelector { tag_name: None, id: Some("main".to_string()), class: vec![] }
+        ));
+        assert!(matches_simple_selector(
+            &data,
+            &SimpleSelector {
+                tag_name: Some("p".to_string()),
+                id: Some("main".to_string()),
+                class: vec!["note".to_string(), "important".to_string()],
+            }
+        ));
+
+        // 任何单个不匹配的组件都会拒绝该元素。
+        assert!(!matches_simple_selector(
+            &data,
+            &SimpleSelector { tag_name: Some("div".to_string()), id: None, class: vec![] }
+        ));
+        assert!(!matches_simple_selector(
+            &data,
+            &SimpleSelector { tag_name: None, id: Some("other".to_string()), class: vec![] }
+        ));
+        assert!(!matches_simple_selector(
+            &data,
+            &SimpleSelector { tag_name: None, id: None, class: vec!["missing".to_string()] }
+        ));
+        // 类在空格分隔的标记上匹配，而不是在子字符串上匹配。
+        assert!(!matches_simple_selector(
+            &data,
+            &SimpleSelector { tag_name: None, id: None, class: vec!["impo".to_string()] }
+        ));
+    }
+
+    #[test]
+    fn match_rule_uses_the_first_matching_selector() {
+        let data = ElementData {
+            tag_name: "div".to_string(),
+            attrs: attrs(&[("class", "wide")]),
+        };
+        let css_rule = rule(
+            vec![
+                selector(Some("div"), None, &["wide"]),
+                selector(Some("div"), None, &[]),
+            ],
+            vec![("display", Value::Keyword("block".to_string()))],
+        );
+
+        // 第一个（最具体的）匹配选择器决定特异性。
+        let (specificity, matched) = match_rule(&data, &css_rule).unwrap();
+        assert_eq!(specificity, (0, 1, 1));
+        assert_eq!(matched.declarations[0].name, "display");
+
+        // 没有类，第二个选择器匹配的特异性较低。
+        let plain = ElementData { tag_name: "div".to_string(), attrs: attrs(&[]) };
+        assert_eq!(match_rule(&plain, &css_rule).unwrap().0, (0, 0, 1));
+
+        // 不匹配的元素不会选择任何内容。
+        let other = ElementData { tag_name: "span".to_string(), attrs: attrs(&[]) };
+        assert!(match_rule(&other, &css_rule).is_none());
+    }
+
+    #[test]
+    fn matching_rules_collects_every_matching_rule() {
+        let data = ElementData {
+            tag_name: "p".to_string(),
+            attrs: attrs(&[("id", "main")]),
+        };
+        let css = stylesheet(vec![
+            rule(
+                vec![selector(Some("p"), None, &[])],
+                vec![("margin", Value::Length(1.0, Unit::Px))],
+            ),
+            rule(vec![selector(Some("span"), None, &[])], vec![]),
+            rule(
+                vec![selector(None, Some("main"), &[])],
+                vec![("padding", Value::Length(2.0, Unit::Px))],
+            ),
+        ]);
+
+        let matched = matching_rules(&data, &css);
+        assert_eq!(matched.len(), 2);
+        assert_eq!(matched[0].0, (0, 0, 1));
+        assert_eq!(matched[1].0, (1, 0, 0));
+    }
+}
